@@ -172,6 +172,44 @@ static void markdown_source_update(void *data, obs_data_t *settings)
 		obs_source_update(md->browser, NULL);
 	}
 
+	if (obs_data_get_bool(settings, "simple_style")) {
+		struct dstr css;
+		dstr_init(&css);
+		obs_data_t *font = obs_data_get_obj(settings, "font");
+		long long bgcolor = obs_data_get_int(settings, "bgcolor");
+		long long fgcolor = obs_data_get_int(settings, "fgcolor");
+		dstr_printf(&css, "body { \n\
+	background-color: rgba(%i, %i, %i, %i); \n\
+	color: rgba(%i, %i, %i, %i);\n",
+			    (int)(bgcolor & 0xff),
+			    (int)((bgcolor / 0x100) & 0xff),
+			    (int)((bgcolor / 0x10000) & 0xff),
+			    (int)((bgcolor / 0x1000000) & 0xff),
+			    (int)(fgcolor & 0xff),
+			    (int)((fgcolor / 0x100) & 0xff),
+			    (int)((fgcolor / 0x10000) & 0xff),
+			    (int)((fgcolor / 0x1000000) & 0xff));
+		if (font) {
+			dstr_cat(&css, "\
+	font-family: \"");
+			dstr_cat(&css, obs_data_get_string(font, "face"));
+			dstr_cat(&css, "\";\n");
+			dstr_cat(&css, "\
+	font-style: \"");
+			dstr_cat(&css, obs_data_get_string(font, "style"));
+			dstr_cat(&css, "\";\n");
+
+			dstr_catf(&css, "\
+	font-size: %i;\n",
+				  (int)obs_data_get_int(font, "size"));
+			obs_data_release(font);
+		}
+		dstr_cat(&css, "\
+	margin: 0px 0px; \n\
+	overflow: hidden; \n\
+}");
+		obs_data_set_string(settings, "css", css.array);
+	}
 	const char *mdt = obs_data_get_string(settings, "text");
 	dstr_copy(&md->html, " ");
 	md_html(mdt, (MD_SIZE)strlen(mdt), markdown_source_add_html, &md->html,
@@ -207,9 +245,26 @@ static void markdown_source_update(void *data, obs_data_t *settings)
 	obs_data_release(bs);
 }
 
-static obs_properties_t *markdown_source_properties(void *data)
+static bool markdown_source_simple_style_changed(void *data,
+						 obs_properties_t *props,
+						 obs_property_t *property,
+						 obs_data_t *settings)
 {
 	UNUSED_PARAMETER(data);
+	UNUSED_PARAMETER(property);
+	bool simple = obs_data_get_bool(settings, "simple_style");
+	obs_property_t *p = obs_properties_get(props, "css");
+	obs_property_set_visible(p, !simple);
+	p = obs_properties_get(props, "bgcolor");
+	obs_property_set_visible(p, simple);
+	p = obs_properties_get(props, "fgcolor");
+	obs_property_set_visible(p, simple);
+	p = obs_properties_get(props, "font");
+	obs_property_set_visible(p, simple);
+	return true;
+}
+static obs_properties_t *markdown_source_properties(void *data)
+{
 	obs_properties_t *props = obs_properties_create();
 	obs_properties_add_int(props, "width", obs_module_text("Width"), 1,
 			       8192, 1);
@@ -218,6 +273,17 @@ static obs_properties_t *markdown_source_properties(void *data)
 	obs_property_t *p = obs_properties_add_text(
 		props, "text", obs_module_text("Markdown"), OBS_TEXT_MULTILINE);
 	obs_property_text_set_monospace(p, true);
+
+	p = obs_properties_add_bool(props, "simple_style",
+				    obs_module_text("SimpleStyle"));
+	obs_property_set_modified_callback2(
+		p, markdown_source_simple_style_changed, data);
+
+	obs_properties_add_color_alpha(props, "bgcolor",
+				       obs_module_text("BackgroundColor"));
+	obs_properties_add_color_alpha(props, "fgcolor",
+				       obs_module_text("ForegroundColor"));
+	obs_properties_add_font(props, "font", obs_module_text("Font"));
 
 	p = obs_properties_add_text(props, "css", obs_module_text("CSS"),
 				    OBS_TEXT_MULTILINE);
@@ -234,11 +300,15 @@ static void markdown_source_defaults(obs_data_t *settings)
 {
 	obs_data_set_default_string(settings, "css", "body { \n\
 	background-color: rgba(0, 0, 0, 0); \n\
+	color: rgba(255, 255, 255, 255); \n\
 	margin: 0px 0px; \n\
 	overflow: hidden; \n\
 }");
 	obs_data_set_default_int(settings, "width", 800);
 	obs_data_set_default_int(settings, "height", 600);
+	obs_data_set_default_bool(settings, "simple_style", false);
+	obs_data_set_default_int(settings, "bgcolor", 0);
+	obs_data_set_default_int(settings, "fgcolor", 0xffffffff);
 }
 
 struct obs_source_info markdown_source = {
