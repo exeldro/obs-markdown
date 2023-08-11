@@ -224,7 +224,7 @@ static obs_properties_t *markdown_source_properties(void *data)
 	obs_property_text_set_monospace(p, true);
 	obs_properties_add_text(
 		props, "plugin_info",
-		"Markdown Source (" PROJECT_VERSION
+		"<a href=\"https://obsproject.com/forum/resources/markdown-source.1764/\">Markdown Source</a> (" PROJECT_VERSION
 		") by <a href=\"https://www.exeldro.com\">Exeldro</a>",
 		OBS_TEXT_INFO);
 	return props;
@@ -244,8 +244,7 @@ static void markdown_source_defaults(obs_data_t *settings)
 struct obs_source_info markdown_source = {
 	.id = "markdown_source",
 	.type = OBS_SOURCE_TYPE_INPUT,
-	.output_flags = OBS_SOURCE_VIDEO | 
-			OBS_SOURCE_CUSTOM_DRAW | 
+	.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW |
 			OBS_SOURCE_DO_NOT_DUPLICATE | OBS_SOURCE_SRGB,
 	.icon_type = OBS_ICON_TYPE_TEXT,
 	.create = markdown_source_create,

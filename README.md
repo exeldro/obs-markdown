@@ -2,6 +2,9 @@
 
 Plugin for OBS Studio to add Markdown sources
 
+# Installation
+Download from https://obsproject.com/forum/resources/markdown-source.1764/
+
 # Build
 1. In-tree build
     - Build OBS Studio: https://obsproject.com/wiki/Install-Instructions
