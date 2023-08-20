@@ -2,11 +2,28 @@
 #include "version.h"
 #include "md4c-html.h"
 #include <util/dstr.h>
+#include <util/threading.h>
+#include <util/platform.h>
+#include <sys/stat.h>
+
+#define MARKDOWN_TEXT 0
+#define MARKDOWN_FILE 1
+
+#define STYLE_CSS 0
+#define STYLE_CSS_FILE 1
+#define STYLE_SETTINGS 2
 
 struct markdown_source_data {
 	obs_source_t *source;
 	obs_source_t *browser;
 	struct dstr html;
+	struct dstr markdown_path;
+	time_t markdown_time;
+	struct dstr css_path;
+	time_t css_time;
+	pthread_t thread;
+	bool stop;
+	uint32_t sleep;
 };
 
 static char encoding_table[] = {
@@ -101,11 +118,66 @@ window.addEventListener('setMarkdownCss', function(event) { \
 	bfree(b64);
 }
 
+static void markdown_source_remove(void *data, calldata_t *cd)
+{
+	UNUSED_PARAMETER(cd);
+	struct markdown_source_data *md = data;
+	if (!md->browser)
+		return;
+	obs_source_remove_active_child(md->source, md->browser);
+	obs_source_release(md->browser);
+	md->browser = NULL;
+}
+
+static bool markdown_source_file_changed(const char *path, time_t *time,
+					 obs_data_t *settings,
+					 const char *setting)
+{
+	bool changed = false;
+	struct stat stats;
+	if (os_stat(path, &stats) != 0)
+		return changed;
+	if (stats.st_mtime == *time)
+		return changed;
+	char *text = os_quick_read_utf8_file(path);
+	if (!text)
+		return changed;
+	const char *old_text = obs_data_get_string(settings, setting);
+	if (strcmp(text, old_text) != 0) {
+		obs_data_set_string(settings, setting, text);
+		changed = true;
+		*time = stats.st_mtime;
+	}
+	bfree(text);
+	return changed;
+}
+
+static void *markdown_source_thread(void *data)
+{
+	struct markdown_source_data *md = (struct markdown_source_data *)data;
+	os_set_thread_name("markdown_source_thread");
+	while (!md->stop) {
+		os_sleep_ms(md->sleep);
+		if (md->css_path.len == 0 && md->markdown_path.len == 0)
+			continue;
+		obs_data_t *settings = obs_source_get_settings(md->source);
+		if (markdown_source_file_changed(md->markdown_path.array,
+						 &md->markdown_time, settings,
+						 "text") ||
+		    markdown_source_file_changed(
+			    md->css_path.array, &md->css_time, settings, "css"))
+			obs_source_update(md->source, NULL);
+		obs_data_release(settings);
+	}
+	return NULL;
+}
+
 static void *markdown_source_create(obs_data_t *settings, obs_source_t *source)
 {
 	struct markdown_source_data *md =
 		bzalloc(sizeof(struct markdown_source_data));
 	md->source = source;
+	md->sleep = 100;
 
 	obs_data_t *bs = obs_data_create();
 	obs_data_set_int(bs, "width", obs_data_get_int(settings, "width"));
@@ -117,14 +189,26 @@ static void *markdown_source_create(obs_data_t *settings, obs_source_t *source)
 						"markdown browser", bs);
 	obs_data_release(bs);
 	obs_source_add_active_child(md->source, md->browser);
+
+	signal_handler_t *sh = obs_source_get_signal_handler(source);
+	signal_handler_connect(sh, "remove", markdown_source_remove, md);
+
+	pthread_create(&md->thread, NULL, markdown_source_thread, md);
+
 	return md;
 }
 
 static void markdown_source_destroy(void *data)
 {
 	struct markdown_source_data *md = data;
-	obs_source_remove_active_child(md->source, md->browser);
-	obs_source_release(md->browser);
+	dstr_free(&md->markdown_path);
+	dstr_free(&md->css_path);
+	md->stop = true;
+	pthread_join(md->thread, NULL);
+	if (md->browser) {
+		obs_source_remove_active_child(md->source, md->browser);
+		obs_source_release(md->browser);
+	}
 	dstr_free(&md->html);
 	bfree(md);
 }
@@ -160,6 +244,9 @@ static void markdown_source_enum_sources(void *data,
 static void markdown_source_update(void *data, obs_data_t *settings)
 {
 	struct markdown_source_data *md = data;
+	md->sleep = (uint32_t)obs_data_get_int(settings, "sleep");
+	if (!md->sleep)
+		md->sleep = 100;
 	obs_data_t *bs = obs_source_get_settings(md->browser);
 	if (obs_data_get_int(settings, "width") !=
 		    obs_data_get_int(bs, "width") ||
@@ -171,8 +258,29 @@ static void markdown_source_update(void *data, obs_data_t *settings)
 				 obs_data_get_int(settings, "height"));
 		obs_source_update(md->browser, NULL);
 	}
-
+	if (obs_data_get_int(settings, "markdown_source") == MARKDOWN_FILE) {
+		const char *path =
+			obs_data_get_string(settings, "markdown_path");
+		if (md->markdown_path.array == NULL ||
+		    strcmp(md->markdown_path.array, path) != 0)
+			dstr_copy(&md->markdown_path, path);
+	} else if (md->markdown_path.len > 0) {
+		dstr_copy(&md->markdown_path, "");
+	}
 	if (obs_data_get_bool(settings, "simple_style")) {
+		obs_data_unset_user_value(settings, "simple_style");
+		obs_data_set_int(settings, "css_source", STYLE_SETTINGS);
+	}
+	long long css_source = obs_data_get_int(settings, "css_source");
+	if (css_source == STYLE_CSS_FILE) {
+		const char *path = obs_data_get_string(settings, "css_path");
+		if (md->css_path.array == NULL ||
+		    strcmp(md->css_path.array, path) != 0)
+			dstr_copy(&md->css_path, path);
+	} else if (md->css_path.len > 0) {
+		dstr_copy(&md->css_path, "");
+	}
+	if (css_source == STYLE_SETTINGS) {
 		struct dstr css;
 		dstr_init(&css);
 		obs_data_t *font = obs_data_get_obj(settings, "font");
@@ -209,6 +317,7 @@ static void markdown_source_update(void *data, obs_data_t *settings)
 	overflow: hidden; \n\
 }");
 		obs_data_set_string(settings, "css", css.array);
+		dstr_free(&css);
 	}
 	const char *mdt = obs_data_get_string(settings, "text");
 	dstr_copy(&md->html, " ");
@@ -245,39 +354,87 @@ static void markdown_source_update(void *data, obs_data_t *settings)
 	obs_data_release(bs);
 }
 
-static bool markdown_source_simple_style_changed(void *data,
-						 obs_properties_t *props,
-						 obs_property_t *property,
-						 obs_data_t *settings)
+static bool markdown_source_changed(void *data, obs_properties_t *props,
+				    obs_property_t *property,
+				    obs_data_t *settings)
 {
 	UNUSED_PARAMETER(data);
 	UNUSED_PARAMETER(property);
-	bool simple = obs_data_get_bool(settings, "simple_style");
-	obs_property_t *p = obs_properties_get(props, "css");
-	obs_property_set_visible(p, !simple);
-	p = obs_properties_get(props, "bgcolor");
-	obs_property_set_visible(p, simple);
-	p = obs_properties_get(props, "fgcolor");
-	obs_property_set_visible(p, simple);
-	p = obs_properties_get(props, "font");
-	obs_property_set_visible(p, simple);
+
+	bool markdown_is_file =
+		(obs_data_get_int(settings, "markdown_source") ==
+		 MARKDOWN_FILE);
+	obs_property_t *p = obs_properties_get(props, "text");
+	obs_property_set_visible(p, !markdown_is_file);
+	p = obs_properties_get(props, "markdown_path");
+	obs_property_set_visible(p, markdown_is_file);
+	p = obs_properties_get(props, "sleep");
+	obs_property_set_visible(p, markdown_is_file ||
+					    obs_data_get_int(settings,
+							     "css_source") ==
+						    STYLE_CSS_FILE);
 	return true;
 }
+
+static bool markdown_source_style_changed(void *data, obs_properties_t *props,
+					  obs_property_t *property,
+					  obs_data_t *settings)
+{
+	UNUSED_PARAMETER(data);
+	UNUSED_PARAMETER(property);
+	long long style = obs_data_get_int(settings, "css_source");
+	obs_property_t *p = obs_properties_get(props, "css");
+	obs_property_set_visible(p, style == STYLE_CSS);
+	p = obs_properties_get(props, "bgcolor");
+	obs_property_set_visible(p, style == STYLE_SETTINGS);
+	p = obs_properties_get(props, "fgcolor");
+	obs_property_set_visible(p, style == STYLE_SETTINGS);
+	p = obs_properties_get(props, "font");
+	obs_property_set_visible(p, style == STYLE_SETTINGS);
+	p = obs_properties_get(props, "css_path");
+	obs_property_set_visible(p, style == STYLE_CSS_FILE);
+	p = obs_properties_get(props, "sleep");
+	obs_property_set_visible(
+		p, style == STYLE_CSS_FILE ||
+			   obs_data_get_int(settings, "markdown_source") ==
+				   MARKDOWN_FILE);
+	return true;
+}
+
 static obs_properties_t *markdown_source_properties(void *data)
 {
+	struct markdown_source_data *md = data;
 	obs_properties_t *props = obs_properties_create();
 	obs_properties_add_int(props, "width", obs_module_text("Width"), 1,
 			       8192, 1);
 	obs_properties_add_int(props, "height", obs_module_text("Height"), 1,
 			       8192, 1);
-	obs_property_t *p = obs_properties_add_text(
-		props, "text", obs_module_text("Markdown"), OBS_TEXT_MULTILINE);
+	obs_property_t *p = obs_properties_add_list(
+		props, "markdown_source", obs_module_text("MarkdownSource"),
+		OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, obs_module_text("Text"), MARKDOWN_TEXT);
+	obs_property_list_add_int(p, obs_module_text("File"), MARKDOWN_FILE);
+	obs_property_set_modified_callback2(p, markdown_source_changed, data);
+
+	p = obs_properties_add_text(props, "text", obs_module_text("Markdown"),
+				    OBS_TEXT_MULTILINE);
 	obs_property_text_set_monospace(p, true);
 
-	p = obs_properties_add_bool(props, "simple_style",
-				    obs_module_text("SimpleStyle"));
-	obs_property_set_modified_callback2(
-		p, markdown_source_simple_style_changed, data);
+	obs_properties_add_path(props, "markdown_path",
+				obs_module_text("MarkdownFile"), OBS_PATH_FILE,
+				"Markdown files (*.md);;All files (*.*)",
+				md->markdown_path.array);
+
+	p = obs_properties_add_list(props, "css_source",
+				    obs_module_text("CssSource"),
+				    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, obs_module_text("CssText"), STYLE_CSS);
+	obs_property_list_add_int(p, obs_module_text("CssFile"),
+				  STYLE_CSS_FILE);
+	obs_property_list_add_int(p, obs_module_text("SimpleStyle"),
+				  STYLE_SETTINGS);
+	obs_property_set_modified_callback2(p, markdown_source_style_changed,
+					    data);
 
 	obs_properties_add_color_alpha(props, "bgcolor",
 				       obs_module_text("BackgroundColor"));
@@ -288,6 +445,16 @@ static obs_properties_t *markdown_source_properties(void *data)
 	p = obs_properties_add_text(props, "css", obs_module_text("CSS"),
 				    OBS_TEXT_MULTILINE);
 	obs_property_text_set_monospace(p, true);
+
+	obs_properties_add_path(props, "css_path", obs_module_text("CssFile"),
+				OBS_PATH_FILE,
+				"CSS files (*.css);;All files (*.*)",
+				md->css_path.array);
+
+	p = obs_properties_add_int(props, "sleep", obs_module_text("Refresh"),
+				   1, 10000, 1);
+	obs_property_int_set_suffix(p, "ms");
+
 	obs_properties_add_text(
 		props, "plugin_info",
 		"<a href=\"https://obsproject.com/forum/resources/markdown-source.1764/\">Markdown Source</a> (" PROJECT_VERSION
@@ -306,7 +473,7 @@ static void markdown_source_defaults(obs_data_t *settings)
 }");
 	obs_data_set_default_int(settings, "width", 800);
 	obs_data_set_default_int(settings, "height", 600);
-	obs_data_set_default_bool(settings, "simple_style", false);
+	obs_data_set_default_int(settings, "sleep", 300);
 	obs_data_set_default_int(settings, "bgcolor", 0);
 	obs_data_set_default_int(settings, "fgcolor", 0xffffffff);
 }

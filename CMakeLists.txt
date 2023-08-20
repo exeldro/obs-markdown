@@ -6,7 +6,7 @@ else()
   cmake_minimum_required(VERSION 3.18)
 endif()
 
-project(markdown VERSION 0.1.0)
+project(markdown VERSION 0.2.0)
 set(PROJECT_FULL_NAME "Markdown Source")
 
 # Set new UUIDs when you start to create a new plugin.
@@ -46,6 +46,7 @@ if(OS_WINDOWS)
 	configure_file(${CMAKE_CURRENT_SOURCE_DIR}/resource.rc.in ${CMAKE_CURRENT_SOURCE_DIR}/${PROJECT_NAME}.rc)
 	target_sources(${PROJECT_NAME} PRIVATE 
 		${CMAKE_CURRENT_SOURCE_DIR}/${PROJECT_NAME}.rc)
+	target_link_libraries(${PROJECT_NAME} w32-pthreads)
 elseif(OS_MACOS)
 		set(MACOS_BUNDLEID "com.exeldro.${PROJECT_NAME}")
 		set(MACOSX_PLUGIN_GUI_IDENTIFIER "${MACOS_BUNDLEID}")
