@@ -193,6 +193,16 @@ static void *markdown_source_create(obs_data_t *settings, obs_source_t *source)
 	signal_handler_t *sh = obs_source_get_signal_handler(source);
 	signal_handler_connect(sh, "remove", markdown_source_remove, md);
 
+	if (obs_data_get_int(settings, "markdown_source") == MARKDOWN_FILE) {
+		markdown_source_file_changed(
+			obs_data_get_string(settings, "markdown_path"),
+			&md->markdown_time, settings, "text");
+	}
+	if (obs_data_get_int(settings, "css_source") == STYLE_CSS_FILE) {
+		markdown_source_file_changed(obs_data_get_string(settings,
+								 "css_path"),
+					     &md->css_time, settings, "css");
+	}
 	pthread_create(&md->thread, NULL, markdown_source_thread, md);
 
 	return md;
