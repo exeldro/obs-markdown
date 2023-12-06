@@ -85,7 +85,7 @@ static void
 markdown_source_set_browser_settings(struct markdown_source_data *md,
 				     obs_data_t *settings, obs_data_t *bs)
 {
-	dstr_copy(&md->html, "<html><head><script>\
+	dstr_copy(&md->html, "<html><head><meta charset=\"UTF-8\"><script>\
 window.addEventListener('setMarkdownHtml', function(event) { \
 	document.body.innerHTML = event.detail.html;\
 });\
