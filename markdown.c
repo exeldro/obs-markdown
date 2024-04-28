@@ -81,6 +81,27 @@ static void markdown_source_add_html(const MD_CHAR *tag, MD_SIZE size,
 	dstr_ncat(dstr, tag, size);
 }
 
+static void ensure_directory(char *path)
+{
+#ifdef _WIN32
+	char *backslash = strrchr(path, '\\');
+	if (backslash)
+		*backslash = '/';
+#endif
+
+	char *slash = strrchr(path, '/');
+	if (slash) {
+		*slash = 0;
+		os_mkdirs(path);
+		*slash = '/';
+	}
+
+#ifdef _WIN32
+	if (backslash)
+		*backslash = '\\';
+#endif
+}
+
 static void
 markdown_source_set_browser_settings(struct markdown_source_data *md,
 				     obs_data_t *settings, obs_data_t *bs)
@@ -105,17 +126,28 @@ window.addEventListener('setMarkdownCss', function(event) { \
 		MD_FLAG_TABLES | MD_FLAG_STRIKETHROUGH | MD_FLAG_TASKLISTS, 0);
 	dstr_cat(&md->html, "</body></html>");
 
-	size_t len;
-	char *b64 = base64_encode((const unsigned char *)md->html.array,
-				  md->html.len, &len);
+	char *fn = os_generate_formatted_filename(
+		"html", true, obs_source_get_name(md->source));
+	char *path = obs_module_config_path(fn);
+	bfree(fn);
+	ensure_directory(path);
+	if (os_quick_write_utf8_file(path, md->html.array, md->html.len,
+				     false)) {
+		obs_data_set_string(bs, "url", path);
+	} else {
+		size_t len;
+		char *b64 = base64_encode((const unsigned char *)md->html.array,
+					  md->html.len, &len);
 
-	struct dstr url;
-	dstr_init_copy(&url, "data:text/html;base64,");
-	dstr_cat(&url, b64);
-	obs_data_set_string(bs, "url", url.array);
-	obs_data_set_string(bs, "css", obs_data_get_string(settings, "css"));
-	dstr_free(&url);
-	bfree(b64);
+		struct dstr url;
+		dstr_init_copy(&url, "data:text/html;base64,");
+		dstr_cat(&url, b64);
+		obs_data_set_string(bs, "url", url.array);
+		dstr_free(&url);
+		bfree(b64);
+	}
+	bfree(path);
+	obs_data_set_string(bs, "css", "");
 }
 
 static void markdown_source_remove(void *data, calldata_t *cd)
@@ -211,10 +243,10 @@ static void *markdown_source_create(obs_data_t *settings, obs_source_t *source)
 static void markdown_source_destroy(void *data)
 {
 	struct markdown_source_data *md = data;
-	dstr_free(&md->markdown_path);
-	dstr_free(&md->css_path);
 	md->stop = true;
 	pthread_join(md->thread, NULL);
+	dstr_free(&md->markdown_path);
+	dstr_free(&md->css_path);
 	if (md->browser) {
 		obs_source_remove_active_child(md->source, md->browser);
 		obs_source_release(md->browser);
