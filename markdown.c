@@ -106,21 +106,16 @@ static void
 markdown_source_set_browser_settings(struct markdown_source_data *md,
 				     obs_data_t *settings, obs_data_t *bs)
 {
-	dstr_copy(&md->html, "<html><head><meta charset=\"UTF-8\"><script>\
-window.addEventListener('setMarkdownHtml', function(event) { \
-	document.body.innerHTML = event.detail.html;\
-});\
-window.addEventListener('setMarkdownCss', function(event) { \
-	if (obsCSS) {\
-		obsCSS.innerHTML = event.detail.css;\
-	} else {\
-		const obsCSS = document.createElement('style');\
-		obsCSS.id = 'obsBrowserCustomStyle';\
-		obsCSS.innerHTML = event.detail.css;\
-		document.querySelector('head').appendChild(obsCSS);\
-	}\
-});\
-</script></head><body>");
+	dstr_copy(&md->html, "<html>\n<head>\n<meta charset=\"UTF-8\">\n<script>\n\
+window.addEventListener('setMarkdownHtml', function(event) { \n\
+	document.body.innerHTML = event.detail.html;\n\
+});\n\
+window.addEventListener('setMarkdownCss', function(event) { \n\
+	document.getElementById('obsBrowserCustomStyle').innerHTML = event.detail.css;\n\
+});\n\
+</script><style id='obsBrowserCustomStyle'>");
+	dstr_cat(&md->html, obs_data_get_string(settings, "css"));
+	dstr_cat(&md->html, "</style>\n</head>\n<body>");
 	const char *mdt = obs_data_get_string(settings, "text");
 	md_html(mdt, (MD_SIZE)strlen(mdt), markdown_source_add_html, &md->html,
 		MD_FLAG_TABLES | MD_FLAG_STRIKETHROUGH | MD_FLAG_TASKLISTS, 0);
