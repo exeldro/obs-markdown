@@ -106,7 +106,8 @@ static void
 markdown_source_set_browser_settings(struct markdown_source_data *md,
 				     obs_data_t *settings, obs_data_t *bs)
 {
-	dstr_copy(&md->html, "<html>\n<head>\n<meta charset=\"UTF-8\">\n<script>\n\
+	dstr_copy(&md->html,
+		  "<html>\n<head>\n<meta charset=\"UTF-8\">\n<script>\n\
 window.addEventListener('setMarkdownHtml', function(event) { \n\
 	document.body.innerHTML = event.detail.html;\n\
 });\n\
@@ -123,8 +124,10 @@ window.addEventListener('setMarkdownCss', function(event) { \n\
 
 	char *fn = os_generate_formatted_filename(
 		"html", true, obs_source_get_name(md->source));
-	char *path = obs_module_config_path(fn);
+	char *path_relative = obs_module_config_path(fn);
 	bfree(fn);
+	char *path = os_get_abs_path_ptr(path_relative);
+	bfree(path_relative);
 	ensure_directory(path);
 	if (os_quick_write_utf8_file(path, md->html.array, md->html.len,
 				     false)) {
