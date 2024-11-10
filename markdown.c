@@ -317,12 +317,19 @@ static void markdown_source_update(void *data, obs_data_t *settings)
 			dstr_catf(&css, "\
 	font-size: %i;\n",
 				  (int)obs_data_get_int(font, "size"));
-			obs_data_release(font);
 		}
 		dstr_cat(&css, "\
 	margin: 0px 0px; \n\
 	overflow: hidden; \n\
 }");
+		if (font) {
+			dstr_catf(&css, "\n\
+table {\n\
+	font-size: %i;\n\
+}",
+				  (int)obs_data_get_int(font, "size"));
+			obs_data_release(font);
+		}
 		obs_data_set_string(settings, "css", css.array);
 		dstr_free(&css);
 	}
