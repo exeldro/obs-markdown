@@ -6,7 +6,7 @@ else()
   cmake_minimum_required(VERSION 3.18)
 endif()
 
-project(markdown VERSION 0.2.6)
+project(markdown VERSION 0.2.7)
 set(PROJECT_FULL_NAME "Markdown Source")
 
 # Set new UUIDs when you start to create a new plugin.

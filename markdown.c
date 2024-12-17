@@ -123,19 +123,19 @@ window.addEventListener('setMarkdownCss', function(event) { \n\
 		path = path_relative;
 	}
 	ensure_directory(path);
+	struct dstr url;
 	if (os_quick_write_utf8_file(path, md->html.array, md->html.len, false)) {
-		obs_data_set_string(bs, "url", path);
+		dstr_init_copy(&url, "file://");
+		dstr_cat(&url, path);
 	} else {
 		size_t len;
 		char *b64 = base64_encode((const unsigned char *)md->html.array, md->html.len, &len);
-
-		struct dstr url;
 		dstr_init_copy(&url, "data:text/html;base64,");
 		dstr_cat(&url, b64);
-		obs_data_set_string(bs, "url", url.array);
-		dstr_free(&url);
 		bfree(b64);
 	}
+	obs_data_set_string(bs, "url", url.array);
+	dstr_free(&url);
 	bfree(path);
 	obs_data_set_string(bs, "css", "");
 }
