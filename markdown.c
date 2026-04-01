@@ -1,30 +1,19 @@
+#include "markdown.h"
 #include <obs-module.h>
 #include "version.h"
 #include "md4c-html.h"
-#include <util/dstr.h>
-#include <util/threading.h>
 #include <util/platform.h>
 #include <sys/stat.h>
 
 #define MARKDOWN_TEXT 0
 #define MARKDOWN_FILE 1
 
+#define RENDER_CEF 0
+#define RENDER_QT 1
+
 #define STYLE_CSS 0
 #define STYLE_CSS_FILE 1
 #define STYLE_SETTINGS 2
-
-struct markdown_source_data {
-	obs_source_t *source;
-	obs_source_t *browser;
-	struct dstr html;
-	struct dstr markdown_path;
-	time_t markdown_time;
-	struct dstr css_path;
-	time_t css_time;
-	pthread_t thread;
-	bool stop;
-	uint32_t sleep;
-};
 
 static char encoding_table[] = {'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
 				'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f',
@@ -37,7 +26,7 @@ char *base64_encode(const unsigned char *data, size_t input_length, size_t *outp
 
 	*output_length = 4 * ((input_length + 2) / 3);
 
-	char *encoded_data = bmalloc(*output_length + 1);
+	char *encoded_data = (char *)bmalloc(*output_length + 1);
 	if (encoded_data == NULL)
 		return NULL;
 
@@ -69,7 +58,7 @@ static const char *markdown_source_name(void *type_data)
 
 static void markdown_source_add_html(const MD_CHAR *tag, MD_SIZE size, void *data)
 {
-	struct dstr *dstr = data;
+	struct dstr *dstr = (struct dstr *)data;
 	dstr_ncat(dstr, tag, size);
 }
 
@@ -143,7 +132,7 @@ window.addEventListener('setMarkdownCss', function(event) { \n\
 static void markdown_source_remove(void *data, calldata_t *cd)
 {
 	UNUSED_PARAMETER(cd);
-	struct markdown_source_data *md = data;
+	struct markdown_source_data *md = (struct markdown_source_data *)data;
 	if (!md->browser)
 		return;
 	obs_source_remove_active_child(md->source, md->browser);
@@ -189,21 +178,27 @@ static void *markdown_source_thread(void *data)
 	return NULL;
 }
 
-static void *markdown_source_create(obs_data_t *settings, obs_source_t *source)
+static void create_browser_source(struct markdown_source_data *md, obs_data_t *settings)
 {
-	struct markdown_source_data *md = bzalloc(sizeof(struct markdown_source_data));
-	md->source = source;
-	md->sleep = 100;
+	if (md->browser)
+		return;
 
 	obs_data_t *bs = obs_data_create();
 	obs_data_set_int(bs, "width", obs_data_get_int(settings, "width"));
 	obs_data_set_int(bs, "height", obs_data_get_int(settings, "height"));
-
-	dstr_init(&md->html);
 	markdown_source_set_browser_settings(md, settings, bs);
 	md->browser = obs_source_create_private("browser_source", "markdown browser", bs);
 	obs_data_release(bs);
-	obs_source_add_active_child(md->source, md->browser);
+	if (md->browser)
+		obs_source_add_active_child(md->source, md->browser);
+}
+
+static void *markdown_source_create(obs_data_t *settings, obs_source_t *source)
+{
+	struct markdown_source_data *md = (struct markdown_source_data *)bzalloc(sizeof(struct markdown_source_data));
+	md->source = source;
+	md->sleep = 100;
+	dstr_init(&md->html);
 
 	signal_handler_t *sh = obs_source_get_signal_handler(source);
 	signal_handler_connect(sh, "remove", markdown_source_remove, md);
@@ -216,12 +211,13 @@ static void *markdown_source_create(obs_data_t *settings, obs_source_t *source)
 	}
 	pthread_create(&md->thread, NULL, markdown_source_thread, md);
 
+	obs_source_update(source, settings);
 	return md;
 }
 
 static void markdown_source_destroy(void *data)
 {
-	struct markdown_source_data *md = data;
+	struct markdown_source_data *md = (struct markdown_source_data *)data;
 	md->stop = true;
 	pthread_join(md->thread, NULL);
 	dstr_free(&md->markdown_path);
@@ -230,49 +226,103 @@ static void markdown_source_destroy(void *data)
 		obs_source_remove_active_child(md->source, md->browser);
 		obs_source_release(md->browser);
 	}
+	if (md->texture) {
+		obs_enter_graphics();
+		gs_texture_destroy(md->texture);
+		obs_leave_graphics();
+	}
 	dstr_free(&md->html);
 	bfree(md);
 }
 
 uint32_t markdown_source_width(void *data)
 {
-	struct markdown_source_data *md = data;
-	return obs_source_get_width(md->browser);
+	struct markdown_source_data *md = (struct markdown_source_data *)data;
+	if (md->browser)
+		return obs_source_get_width(md->browser);
+
+	return md->cx;
 }
 
 uint32_t markdown_source_height(void *data)
 {
-	struct markdown_source_data *md = data;
-	return obs_source_get_height(md->browser);
+	struct markdown_source_data *md = (struct markdown_source_data *)data;
+	if (md->browser)
+		return obs_source_get_height(md->browser);
+
+	return md->cy;
 }
 
 void markdown_source_render(void *data, gs_effect_t *effect)
 {
 	UNUSED_PARAMETER(effect);
-	struct markdown_source_data *md = data;
-	obs_source_video_render(md->browser);
+	struct markdown_source_data *md = (struct markdown_source_data *)data;
+	if (md->browser)
+		obs_source_video_render(md->browser);
+
+	if (!md->texture)
+		return;
+
+	effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	gs_technique_t *tech = gs_effect_get_technique(effect, "Draw");
+	const bool prev = gs_framebuffer_srgb_enabled();
+	gs_enable_framebuffer_srgb(true);
+	gs_technique_begin(tech);
+	gs_technique_begin_pass(tech, 0);
+	gs_effect_set_texture_srgb(gs_effect_get_param_by_name(effect, "image"), md->texture);
+	gs_draw_sprite(md->texture, 0, md->cx, md->cy);
+	gs_technique_end_pass(tech);
+	gs_technique_end(tech);
+	gs_enable_framebuffer_srgb(prev);
 }
 
 static void markdown_source_enum_sources(void *data, obs_source_enum_proc_t enum_callback, void *param)
 {
-	struct markdown_source_data *md = data;
+	struct markdown_source_data *md = (struct markdown_source_data *)data;
 	if (md->browser)
 		enum_callback(md->source, md->browser, param);
 }
 
+static void render_qt_task(void *data) {
+	struct markdown_source_data *md = (struct markdown_source_data *)data;
+	obs_data_t *settings = obs_source_get_settings(md->source);
+	render_qt(md, settings);
+	obs_data_release(settings);
+}
+
 static void markdown_source_update(void *data, obs_data_t *settings)
 {
-	struct markdown_source_data *md = data;
+	struct markdown_source_data *md = (struct markdown_source_data *)data;
 	md->sleep = (uint32_t)obs_data_get_int(settings, "sleep");
 	if (!md->sleep)
 		md->sleep = 100;
-	obs_data_t *bs = obs_source_get_settings(md->browser);
-	if (obs_data_get_int(settings, "width") != obs_data_get_int(bs, "width") ||
-	    obs_data_get_int(settings, "height") != obs_data_get_int(bs, "height")) {
-		obs_data_set_int(bs, "width", obs_data_get_int(settings, "width"));
-		obs_data_set_int(bs, "height", obs_data_get_int(settings, "height"));
-		obs_source_update(md->browser, NULL);
+
+	if (obs_data_get_int(settings, "renderer") == RENDER_QT) {
+		if (md->browser) {
+			obs_source_remove_active_child(md->source, md->browser);
+			obs_source_release(md->browser);
+			md->browser = NULL;
+		}
+	} else {
+		create_browser_source(md, settings);
+		if (md->browser) {
+			if (md->texture) {
+				obs_enter_graphics();
+				gs_texture_destroy(md->texture);
+				md->texture = NULL;
+				obs_leave_graphics();
+			}
+			obs_data_t *bs = obs_source_get_settings(md->browser);
+			if (obs_data_get_int(settings, "width") != obs_data_get_int(bs, "width") ||
+			    obs_data_get_int(settings, "height") != obs_data_get_int(bs, "height")) {
+				obs_data_set_int(bs, "width", obs_data_get_int(settings, "width"));
+				obs_data_set_int(bs, "height", obs_data_get_int(settings, "height"));
+				obs_source_update(md->browser, bs);
+			}
+			obs_data_release(bs);
+		}
 	}
+
 	if (obs_data_get_int(settings, "markdown_source") == MARKDOWN_FILE) {
 		const char *path = obs_data_get_string(settings, "markdown_path");
 		if (md->markdown_path.array == NULL || strcmp(md->markdown_path.array, path) != 0)
@@ -333,38 +383,52 @@ table {\n\
 		obs_data_set_string(settings, "css", css.array);
 		dstr_free(&css);
 	}
-	const char *mdt = obs_data_get_string(settings, "text");
-	dstr_copy(&md->html, " ");
-	md_html(mdt, (MD_SIZE)strlen(mdt), markdown_source_add_html, &md->html,
-		MD_FLAG_TABLES | MD_FLAG_STRIKETHROUGH | MD_FLAG_TASKLISTS, 0);
-	bool refresh = false;
-	proc_handler_t *ph = obs_source_get_proc_handler(md->browser);
-	if (ph) {
-		obs_data_t *json = obs_data_create();
-		obs_data_set_string(json, "html", md->html.array);
-		struct calldata cd = {0};
-		calldata_set_string(&cd, "eventName", "setMarkdownHtml");
-		calldata_set_string(&cd, "jsonString", obs_data_get_json(json));
-		if (!proc_handler_call(ph, "javascript_event", &cd))
-			refresh = true;
-		obs_data_release(json);
+	if (md->browser) {
+		bool refresh = false;
+		proc_handler_t *ph = obs_source_get_proc_handler(md->browser);
+		if (ph) {
+			const char *mdt = obs_data_get_string(settings, "text");
+			dstr_copy(&md->html, " ");
+			md_html(mdt, (MD_SIZE)strlen(mdt), markdown_source_add_html, &md->html,
+				MD_FLAG_TABLES | MD_FLAG_STRIKETHROUGH | MD_FLAG_TASKLISTS, 0);
+			obs_data_t *json = obs_data_create();
+			obs_data_set_string(json, "html", md->html.array);
+			struct calldata cd = {0};
+			calldata_set_string(&cd, "eventName", "setMarkdownHtml");
+			calldata_set_string(&cd, "jsonString", obs_data_get_json(json));
+			if (!proc_handler_call(ph, "javascript_event", &cd))
+				refresh = true;
+			obs_data_release(json);
 
-		json = obs_data_create();
-		obs_data_set_string(json, "css", obs_data_get_string(settings, "css"));
-		calldata_set_string(&cd, "eventName", "setMarkdownCss");
-		calldata_set_string(&cd, "jsonString", obs_data_get_json(json));
-		if (!proc_handler_call(ph, "javascript_event", &cd))
+			json = obs_data_create();
+			obs_data_set_string(json, "css", obs_data_get_string(settings, "css"));
+			calldata_set_string(&cd, "eventName", "setMarkdownCss");
+			calldata_set_string(&cd, "jsonString", obs_data_get_json(json));
+			if (!proc_handler_call(ph, "javascript_event", &cd))
+				refresh = true;
+			calldata_free(&cd);
+			obs_data_release(json);
+		} else {
 			refresh = true;
-		calldata_free(&cd);
-		obs_data_release(json);
+		}
+		if (refresh) {
+			obs_data_t *bs = obs_source_get_settings(md->browser);
+			markdown_source_set_browser_settings(md, settings, bs);
+			obs_source_update(md->browser, bs);
+			obs_data_release(bs);
+		}
 	} else {
-		refresh = true;
+		obs_queue_task(OBS_TASK_UI, render_qt_task, md, false);
 	}
-	if (refresh) {
-		markdown_source_set_browser_settings(md, settings, bs);
-		obs_source_update(md->browser, NULL);
-	}
-	obs_data_release(bs);
+}
+static bool markdown_source_renderer_changed(void *data, obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
+{
+	bool is_qt = (obs_data_get_int(settings, "renderer") == RENDER_QT);
+	obs_property_t *p = obs_properties_get(props, "width");
+	obs_property_set_visible(p, !is_qt);
+	p = obs_properties_get(props, "height");
+	obs_property_set_visible(p, !is_qt);
+	return true;
 }
 
 static bool markdown_source_changed(void *data, obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
@@ -402,14 +466,26 @@ static bool markdown_source_style_changed(void *data, obs_properties_t *props, o
 	return true;
 }
 
+static bool has_browser = false;
+
 static obs_properties_t *markdown_source_properties(void *data)
 {
-	struct markdown_source_data *md = data;
+	struct markdown_source_data *md = (struct markdown_source_data *)data;
 	obs_properties_t *props = obs_properties_create();
-	obs_properties_add_int(props, "width", obs_module_text("Width"), 1, 8192, 1);
-	obs_properties_add_int(props, "height", obs_module_text("Height"), 1, 8192, 1);
-	obs_property_t *p = obs_properties_add_list(props, "markdown_source", obs_module_text("MarkdownSource"),
-						    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_t *p =
+		obs_properties_add_list(props, "renderer", obs_module_text("Renderer"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, obs_module_text("CEF"), RENDER_CEF);
+	obs_property_list_add_int(p, obs_module_text("QT"), RENDER_QT);
+	obs_property_set_modified_callback2(p, markdown_source_renderer_changed, data);
+	if (has_browser) {
+		obs_properties_add_int(props, "width", obs_module_text("Width"), 1, 8192, 1);
+		obs_properties_add_int(props, "height", obs_module_text("Height"), 1, 8192, 1);
+	} else {
+		obs_property_list_item_disable(p, RENDER_CEF, true);
+		obs_property_set_visible(p, false);
+	}
+	p = obs_properties_add_list(props, "markdown_source", obs_module_text("MarkdownSource"), OBS_COMBO_TYPE_LIST,
+				    OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(p, obs_module_text("Text"), MARKDOWN_TEXT);
 	obs_property_list_add_int(p, obs_module_text("File"), MARKDOWN_FILE);
 	obs_property_set_modified_callback2(p, markdown_source_changed, data);
@@ -493,3 +569,16 @@ bool obs_module_load(void)
 }
 
 void obs_module_unload(void) {}
+
+MODULE_EXPORT const char *obs_module_name(void)
+{
+	return obs_module_text("Markdown");
+}
+
+void obs_module_post_load(void) {
+	obs_properties_t* props = obs_get_source_properties("browser_source");
+	if (props) {
+		has_browser = true;
+		obs_properties_destroy(props);
+	}
+}

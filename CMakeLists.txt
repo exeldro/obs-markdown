@@ -19,6 +19,7 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/version.h.in ${CMAKE_CURRENT_SOURCE_D
 
 target_sources(${PROJECT_NAME} PRIVATE
 	markdown.c
+	markdown.cpp
 	entity.c
 	md4c.c
 	md4c-html.c
@@ -46,7 +47,7 @@ if(OS_WINDOWS)
 	configure_file(${CMAKE_CURRENT_SOURCE_DIR}/resource.rc.in ${CMAKE_CURRENT_SOURCE_DIR}/${PROJECT_NAME}.rc)
 	target_sources(${PROJECT_NAME} PRIVATE 
 		${CMAKE_CURRENT_SOURCE_DIR}/${PROJECT_NAME}.rc)
-	target_link_libraries(${PROJECT_NAME} w32-pthreads)
+	target_link_libraries(${PROJECT_NAME} PRIVATE w32-pthreads)
 elseif(OS_MACOS)
 		set(MACOS_BUNDLEID "com.exeldro.${PROJECT_NAME}")
 		set(MACOSX_PLUGIN_GUI_IDENTIFIER "${MACOS_BUNDLEID}")
@@ -56,8 +57,10 @@ elseif(OS_MACOS)
 		target_compile_options(${PROJECT_NAME} PRIVATE -Wall)
 endif()
 
-target_link_libraries(${PROJECT_NAME}
-	OBS::libobs)
+target_link_libraries(${PROJECT_NAME} PRIVATE OBS::libobs)
+
+find_package(Qt6 COMPONENTS Core Gui)
+target_link_libraries(${PROJECT_NAME} PRIVATE Qt::Core Qt6::Gui)
 
 if(BUILD_OUT_OF_TREE)
     if(NOT LIB_OUT_DIR)
