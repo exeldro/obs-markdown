@@ -423,6 +423,8 @@ table {\n\
 }
 static bool markdown_source_renderer_changed(void *data, obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
 {
+	UNUSED_PARAMETER(data);
+	UNUSED_PARAMETER(property);
 	bool is_qt = (obs_data_get_int(settings, "renderer") == RENDER_QT);
 	obs_property_t *p = obs_properties_get(props, "width");
 	obs_property_set_visible(p, !is_qt);
