@@ -421,6 +421,7 @@ table {\n\
 		obs_queue_task(OBS_TASK_UI, render_qt_task, md, false);
 	}
 }
+
 static bool markdown_source_renderer_changed(void *data, obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
 {
 	UNUSED_PARAMETER(data);
